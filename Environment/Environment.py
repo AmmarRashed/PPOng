@@ -29,6 +29,17 @@ contact your TA about it.
 """
 
 
+def get_y_distance(ball_y, paddle_y, paddle_h):
+    """
+    return 0 if ball y is within a paddle range, ow, calculate the distance to the closest end of the paddle.
+    """
+    if ball_y > paddle_y + paddle_h:
+        return ball_y - (paddle_y + paddle_h)  # distance to lower end of the paddle
+    elif ball_y < paddle_y:
+        return paddle_y - ball_y  # distance to upper end of the paddle
+    return 0
+
+
 class PongEnvironment:
     def __init__(self, drawable=True):
         self.drawable = drawable
@@ -69,6 +80,8 @@ class PongEnvironment:
         else:
             pygame.quit()
         self.done = False
+        self.action_space = 3
+        self.observation_space = len(self.observe())
 
     def render(self):
         if self.drawable:
@@ -124,33 +137,29 @@ class PongEnvironment:
     def get_reward(self, action, prev_state, next_state, res):
         prev_ry, prev_ly, prev_bx, prev_by = prev_state
         new_ry, new_ly, new_bx, new_by = next_state
-
-        def get_y_distance(ball_y, paddle_y, paddle_h):
-            """
-            return -1 if ball y is within a paddle range, ow, calculate the distance to the closest end of the paddle.
-            """
-            if ball_y > paddle_y+paddle_h:
-                return ball_y - (paddle_y+paddle_h)  # distance to lower end of the paddle
-            elif ball_y < paddle_y:
-                return paddle_y - ball_y  # distance to upper end of the paddle
-            else:
-                return -1.
-
-        if new_bx > prev_bx: # ball moving towards player 1 (right)
-            yd = get_y_distance(new_by, self.right_paddle.y, self.right_paddle.h)
-            # xd = new_bx - self.right_paddle.x+self.ball.r
-        else:
-            yd = get_y_distance(new_by, self.left_paddle.y, self.left_paddle.h)
-            # xd = new_bx - self.left_paddle.x - self.left_paddle.w -self.ball.r
-
+        if res != 0:
+            return -res
+        if new_bx <= prev_bx:  # ball moving is not moving towards the RL agent (right paddle)
+            return 0
+        yd1 = get_y_distance(new_by, self.right_paddle.y, self.right_paddle.h)
+        return -yd1/(parameters.WINDOW_HEIGHT-self.right_paddle.h)
+        # xd = abs(new_bx - self.right_paddle.x + self.ball.r)
+        # return int(xd < 10) if yd1 == 0 else -yd1/parameters.WINDOW_HEIGHT
+        # return int(xd < 10) if yd1 == 0 else -np.log(yd1)
+        # # yd2 = get_y_distance(new_by, self.left_paddle.y, self.left_paddle.h)
+        # if new_bx > prev_bx: # ball moving towards the right paddle
+        #     xd = new_bx - self.right_paddle.x+self.ball.r
+        # else:
+        #     xd = new_bx - self.left_paddle.x - self.left_paddle.w -self.ball.r
+        # # m = -np.mean([yd1, yd2])
+        # if xd < 1 and m == 0:
+        #     return 1
+        # else:
+        #     return m
         # if xd < 1:  # augment reward at the end of the episode
-        #     yd *= 10
-        return - yd
+        #     # yd *= 10
+        #     return res
+        # else:
+        #     return 0
+        # return -yd * res
 
-
-env = PongEnvironment()
-while True:
-    obs, rew, done = env.step(np.random.choice([0, 1, 2]))
-    time.sleep(0.01)
-    env.render()
-    if done: break

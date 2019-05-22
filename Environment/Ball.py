@@ -21,7 +21,7 @@ class Ball:
         self.color = parameters.BALL_COLOR
 
     def draw(self):
-        pygame.draw.circle(self.window, self.color, (int(round(self.x)), int(round(self.y))), self.r)
+        pygame.draw.circle(self.window, self.color, (int(np.round(self.x)), int(np.round(self.y))), self.r)
 
     def move(self):
         if self.alpha < 0:
