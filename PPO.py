@@ -1,184 +1,207 @@
+import itertools
+
+import tensorflow as tf
 import numpy as np
-import gym
-from keras.models import Model
-from keras.layers import Input, Dense
-from keras import backend as K
-from keras.optimizers import Adam
+from joblib import Parallel, delayed, cpu_count
 
-import numba as nb
+MAX_EPS_LEN = 4096
+TRAJECTORIES_PER_UPDATE = 16
+MAX_STEPS_PER_TRAJECTORY = 1024
+DISCOUNT_RATE = 0.99  # reward discount factor
+UPDATE_STEP = 128  # loop update operation n-steps
+EPSILON = 0.2  # for clipping surrogate objective
+HIDDEN_UNITS = 128
+ACTOR_LEARNING_RATE = 1e-4
+CRITIC_LEARNING_RATE = 1e-4
 
-ENV = 'MountainCarContinuous-v0'
-CONTINUOUS = False
-
-EPISODES = 100000
-
-LOSS_CLIPPING = 0.2 # Only implemented clipping for the surrogate loss, paper said it was best
-EPOCHS = 5
-NOISE = 1.0 # Exploration noise
-
-GAMMA = 0.99
-
-BUFFER_SIZE = 256
-BATCH_SIZE = 32
-NUM_ACTIONS = 1
-NUM_STATE = 2
-HIDDEN_SIZE = 200
-NUM_LAYERS = 2
-ENTROPY_LOSS = 1e-3
-LR = 1e-4 # Lower lr stabilises training greatly
-VALIDATION_EACH = 50 # In 1 in each K episodes, we disable noise and check the performance of our algorithm
-RENDER_EACH = 10
-
-DUMMY_ACTION, DUMMY_VALUE = np.zeros((1, NUM_ACTIONS)), np.zeros((1, 1))
-
-def proximal_policy_optimization_loss_continuous(advantage, old_prediction):
-    def loss(y_true, y_pred):
-        var = K.square(NOISE)
-        pi = 3.1415926
-        denom = K.sqrt(2 * pi * var)
-        prob_num = K.exp(- K.square(y_true - y_pred) / (2 * var))
-        old_prob_num = K.exp(- K.square(y_true - old_prediction) / (2 * var))
-
-        prob = prob_num/denom
-        old_prob = old_prob_num/denom
-        r = prob/(old_prob + 1e-10)
-
-        return -K.mean(K.minimum(r * advantage, K.clip(r, min_value=1 - LOSS_CLIPPING, max_value=1 + LOSS_CLIPPING) * advantage))
-    return loss
+HE_INIT = tf.contrib.layers.variance_scaling_initializer()  # variance works better with (R)eLU activation
+XAVIER = tf.contrib.layers.xavier_initializer()  # xavier works better with sigmoid activation
 
 
-class Agent:
-    def __init__(self):
-        self.critic = self.build_critic()
-        self.actor = self.build_actor_continuous()
+# taken from Aurelion Geron implementation:
+# https://github.com/ageron/handson-ml/blob/master/16_reinforcement_learning.ipynb
 
-        self.env = gym.make(ENV)
-        self.env.continuous = True
-        print(self.env.action_space, 'action_space', self.env.observation_space, 'observation_space')
-        self.episode = 0
-        self.observation = self.env.reset()
-        self.val = False
-        self.reward = []
-        self.reward_over_time = []
-        self.gradient_steps = 0
-        self.action_noise = NOISE
 
-    def build_actor_continuous(self):
-        state_input = Input(shape=(NUM_STATE,))
-        advantage = Input(shape=(1,))
-        old_prediction = Input(shape=(NUM_ACTIONS,))
+def discount_rewards(rewards, discount_rate):
+    discounted_rewards = np.zeros(len(rewards))
+    cumulative_rewards = 0
+    for step in reversed(range(len(rewards))):
+        cumulative_rewards = rewards[step] + cumulative_rewards * discount_rate
+        discounted_rewards[step] = cumulative_rewards
+    return discounted_rewards
 
-        x = Dense(HIDDEN_SIZE, activation='tanh')(state_input)
-        for _ in range(NUM_LAYERS - 1):
-            x = Dense(HIDDEN_SIZE, activation='tanh')(x)
 
-        out_actions = Dense(NUM_ACTIONS, name='output', activation='tanh')(x)
+def discount_and_normalize_rewards(all_rewards, discount_rate):
+    all_discounted_rewards = [discount_rewards(rewards, discount_rate) for rewards in all_rewards]
+    flat_rewards = np.concatenate(all_discounted_rewards)
+    reward_mean = flat_rewards.mean()
+    reward_std = flat_rewards.std()
+    return [(discounted_rewards - reward_mean) / reward_std for discounted_rewards in all_discounted_rewards]
 
-        model = Model(inputs=[state_input, advantage, old_prediction], outputs=[out_actions])
-        model.compile(optimizer=Adam(lr=LR),
-                      loss=[proximal_policy_optimization_loss_continuous(
-                          advantage=advantage,
-                          old_prediction=old_prediction)])
-        model.summary()
 
-        return model
+class PPO(object):
+    def __init__(self, env):
+        self.env = env
+        self.sess = tf.Session()
+        self.state_space = env.observation_space
+        self.action_space = env.action_space
+        self.in_state = tf.placeholder(tf.float32, [None, self.state_space])
 
-    def build_critic(self):
+        # Actor
+        self.pi, self.pi_params = self.build_actor_network("LiveActor", trainable=True)
+        self.old_pi, self.old_pi_params = self.build_actor_network("FrozenActor", trainable=False)
+        self.actions = tf.placeholder(tf.int32, [None, ], name="actor_action")
+        self.advantage_placeholder = tf.placeholder(tf.float32, [None, ], name="actor_advantage")
+        self.actor_loss = self.calculate_clipped_surrogate_loss()
+        self.actor_train_op = tf.train.AdamOptimizer(ACTOR_LEARNING_RATE).minimize(self.actor_loss)
+        self.update_frozen_actor_op = [self.old_pi.assign(p) for p, prev_p in zip(self.pi_params, self.old_pi_params)]
 
-        state_input = Input(shape=(NUM_STATE,))
-        x = Dense(HIDDEN_SIZE, activation='tanh')(state_input)
-        for _ in range(NUM_LAYERS - 1):
-            x = Dense(HIDDEN_SIZE, activation='tanh')(x)
+        # Critic
+        self.v, self.critic_dc_rew, self.advantage, self.critic_loss, self.critic_train_op \
+            = self.build_critic_network()
 
-        out_value = Dense(1)(x)
+        self.sess.run(tf.global_variables_initializer())
+        self.saver = tf.train.Saver()
 
-        model = Model(inputs=[state_input], outputs=[out_value])
-        model.compile(optimizer=Adam(lr=LR), loss='mse')
-
-        return model
-
-    def reset_env(self):
-        self.episode += 1
-        if self.episode % VALIDATION_EACH == 0:
-            self.val = True
-        else:
-            self.val = False
-        self.observation = self.env.reset()
-        self.reward = []
-
-    def get_action_continuous(self):
-        p = self.actor.predict([self.observation.reshape(1, NUM_STATE), DUMMY_VALUE, DUMMY_ACTION])
-        if self.val is False:
-            action = action_matrix = p[0] + np.random.normal(loc=0, scale=NOISE, size=p[0].shape)
-        else:
-            action = action_matrix = p[0]
-        return np.clip(action, -1, 1), action_matrix, p
-
-    def transform_reward(self):
-        for j in range(len(self.reward) - 2, -1, -1):
-            self.reward[j] += self.reward[j + 1] * GAMMA
-
-    def get_batch(self):
+    def calculate_clipped_surrogate_loss(self):
         """
-        Sometimes this rollout exceeds buffer size and thats normal. For example,
-        buffer size is 250 but we don't observe any done's until 250. This rollout
-        continues until we see a done(either a goal reach or time exceed done)
-        This can be altered by counting a variable and checking that variable with
-        buffer size. 
+        :return: clipped surrogate loss
         """
-        batch = [[], [], [], []]
+        actions_indices = tf.stack([tf.range(tf.shape(self.actions)[0], dtype=tf.int32), self.actions], axis=1)
+        # get probabilities of actions according to the corresponding policies
+        pi_prob = tf.gather_nd(params=self.pi, indices=actions_indices)
+        old_pi_prob = tf.gather_nd(params=self.old_pi, indices=actions_indices)
+        # calculate the ratio between the new and old policies
+        ratio = pi_prob / tf.maximum(old_pi_prob, 1e-12)
+        surrogate_loss = tf.multiply(ratio, self.advantage_placeholder)
+        return -tf.reduce_mean(
+            tf.minimum(
+                surrogate_loss,
+                tf.clip_by_value(ratio, 1. - EPSILON, 1. + EPSILON) * self.advantage_placeholder
+            )
+        )
 
-        tmp_batch = [[], [], []]
-        done = False
-        untransformed_reward = []
-        while len(batch[0]) < BUFFER_SIZE:
-            action, action_matrix, predicted_action = self.get_action_continuous()
-            observation, reward, done, info = self.env.step(np.array(action))
-            untransformed_reward.append(reward)
-            if self.gradient_steps % RENDER_EACH == 0:
-                self.env.render()
-            self.reward.append(reward)
-            tmp_batch[0].append(self.observation)
-            tmp_batch[1].append(action_matrix)
-            tmp_batch[2].append(predicted_action)
-            self.observation = observation
+    def build_actor_network(self, name: str, trainable: bool):
+        """
+        :param name: The scope of the network
+        :param trainable: boolean, used to freeze training of the old policy actor
+        :return: the node of actions probabilities, and the parameters of the network
+        """
+        with tf.variable_scope(name):
+            h = tf.layers.dense(self.in_state, HIDDEN_UNITS, activation=tf.nn.elu,
+                                kernel_initializer=HE_INIT, name=f"{name}_H", trainable=trainable)
+            actions_probs = tf.layers.dense(h, self.action_space, activation=tf.nn.softmax,
+                                            kernel_initializer=XAVIER, name=f"{name}_actions", trainable=trainable)
+        params = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=name)
+        return actions_probs, params
 
-            if done:
-                self.transform_reward()
-                if self.val is False:
-                    for i in range(len(tmp_batch[0])):
-                        obs, action, pred = tmp_batch[0][i], tmp_batch[1][i], tmp_batch[2][i]
-                        r = self.reward[i]
-                        batch[0].append(obs)
-                        batch[1].append(action)
-                        batch[2].append(pred)
-                        batch[3].append(r)
-                tmp_batch = [[], [], []]
-                self.reset_env()
+    def build_critic_network(self):
+        """
+        :return: The nodes of:
+        v: state value,
+        dc_rew: discounted reward,
+        advantage: the difference between discounted reward and predicted state value,
+        loss: the mean square error MSE of the advantage
+        train_op: the training operation of the network to be run in a session
+        """
+        with tf.variable_scope("Critic"):
+            h = tf.layers.dense(self.in_state, HIDDEN_UNITS, activation=tf.nn.elu,
+                                kernel_initializer=HE_INIT, name="Critic_H")
+            v = tf.layers.dense(h, 1, name="V")
+            dc_rew = tf.placeholder(tf.float32, [None, 1], name="discounted_R")
+            advantage = tf.subtract(dc_rew, v, name="critic_advantage")
+            loss = tf.reduce_mean(tf.square(advantage))
+            train_op = tf.train.AdamOptimizer(CRITIC_LEARNING_RATE).minimize(loss)
+        return v, dc_rew, advantage, loss, train_op
 
-        obs, action, pred, reward = np.array(batch[0]), np.array(batch[1]), np.array(batch[2]), np.reshape(np.array(batch[3]), (len(batch[3]), 1))
-        pred = np.reshape(pred, (pred.shape[0], pred.shape[2]))
-        return obs, action, pred, reward, untransformed_reward
+    def sample_action(self, state: np.array) -> int:
+        """
+        :param state: observed environment space
+        :return: an action index sampled based on the probability distribution of predicted actions
+        """
+        actions_probs = self.sess.run(self.pi, feed_dict={self.in_state: state})
+        return np.random.choice(self.action_space, p=actions_probs.ravel())
 
-    def run(self):
-        # Note that in PPO, episodes are not counted, instead, we do a rollout of K steps and learn from that
-        while self.episode < EPISODES:
-            """
-            In the original code, these arrays are clipped to BUFFER_SIZE number of elements
-            but I found out that this way it performs better so I updated this -Emir
-            """
-            obs, action, pred, reward, untransformed_reward = self.get_batch()
-            old_prediction = pred
-            pred_values = self.critic.predict(obs)
+    def calculate_state_value(self, state: np.array) -> float:
+        """
+        :param state: observed environment space
+        :return: predicted state value based on the critic network
+        """
+        state = state.reshape(1, -1)
+        return self.sess.run(self.v, feed_dict={self.in_state: state})[0, 0]
 
-            advantage = reward - pred_values
-            # advantage = (advantage - advantage.mean()) / advantage.std()
-            actor_loss = self.actor.fit([obs, advantage, old_prediction], [action], batch_size=BATCH_SIZE, shuffle=True, epochs=EPOCHS, verbose=False)
-            critic_loss = self.critic.fit([obs], [reward], batch_size=BATCH_SIZE, shuffle=True, epochs=EPOCHS, verbose=False)
-            print("Gradient Update:", self.gradient_steps, " Reward: ",sum(untransformed_reward))
-            self.gradient_steps += 1
+    def run_trajectory(self):
+        steps = 0
+        buffer_a = list()
+        buffer_adv = list()
+        all_states = list()
+        all_rewards = list()
+        ep_count = 0
+        while steps < MAX_STEPS_PER_TRAJECTORY:
+            done = False
+            states = list()
+            rewards = list()
+            s = self.env.reset()
+            while not done:
+                a = self.sample_action(s)
+                new_s, rew, done = self.env.step(a)  # actions are the same as their indices, i.e; 0, 1, 2
+                states.append(new_s)
+                rewards.append(rew)
 
+                buffer_a.append(a)
 
-if __name__ == '__main__':
-    ag = Agent()
-    ag.run()
+                s = new_s
+                steps += 1
+            ep_count += 1
+            dc_rews = discount_rewards(rewards, DISCOUNT_RATE)
+            for state, dc_rew in zip(states, dc_rews):
+                # calculate advantage
+                buffer_adv.append(self.sess.run(self.advantage, {self.in_state: state, self.critic_dc_rew: dc_rew}))
+
+            all_states.append(states)
+            all_rewards.append(rewards)
+
+        # discount and normalize rewards of each episode
+        dc_rewards = discount_and_normalize_rewards(all_rewards, DISCOUNT_RATE)
+        for episode_states, episode_rewards in zip(all_states, dc_rewards):
+            for state, dc_rew in zip(episode_states, episode_rewards):
+                # calculate advantage
+                buffer_adv.append(self.sess.run(self.advantage, {self.in_state: state, self.critic_dc_rew: dc_rew}))
+
+        return ep_count, \
+               np.concatenate(all_states), \
+               np.array(buffer_a), \
+               np.concatenate(all_rewards), \
+               np.array(buffer_adv)
+
+    def update(self):
+        trajectories = Parallel(n_jobs=-1)(delayed(self.run_trajectory())() for _ in range(TRAJECTORIES_PER_UPDATE))
+        rollout = list()
+        episodes_count = 0
+        rewards = list()
+        for t in trajectories:
+            episodes_count += t[0]
+            rewards.append(t[-1][-1])
+            rollout += t[1:]
+
+        self._update_actor_critic_networks(rollout)
+
+        # update frozen actor network
+        self.sess.run(self.update_frozen_actor_op)
+
+        return episodes_count, np.mean(rewards)
+
+    def _update_actor_critic_networks(self, rollout):
+        """
+        :param rollout: a list of trajectories
+        each trajectory is represented by:
+        s: array of states
+        a: array of actions
+        dc_r: array of discounted rewards
+        adv: array of advantage values
+        """
+        # update actor critic network
+        for s, a, adv, dc_rew in rollout:
+            for _ in range(UPDATE_STEP):
+                self.sess.run(self.actor_train_op, {self.in_state: s, self.actions: a, self.advantage_placeholder: adv})
+                self.sess.run(self.critic_train_op, {self.in_state: s, self.critic_dc_rew: dc_rew})

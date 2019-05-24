@@ -1,18 +1,9 @@
-import time
-
-from CollusionStrategies import *
-import pygame
-import parameters
 import os
-import pickle as pkl
-import numpy as np
+
+from Ball import Ball
+from CollusionStrategies import *
 from Paddle import Paddle
 from PaddleStrategies import *
-import matplotlib.pyplot as plt
-import datetime
-from Ball import Ball
-import parameters
-import pygame
 
 """
 Structure is a bit complex, so a quick tip for you:
@@ -135,14 +126,21 @@ class PongEnvironment:
         return np.array([self.right_paddle.y, self.left_paddle.y, self.ball.x, self.ball.y])
 
     def get_reward(self, action, prev_state, next_state, res):
+        # return -res
         prev_ry, prev_ly, prev_bx, prev_by = prev_state
         new_ry, new_ly, new_bx, new_by = next_state
         if res != 0:
-            return -res
+            return -res*10
         if new_bx <= prev_bx:  # ball moving is not moving towards the RL agent (right paddle)
             return 0
-        yd1 = get_y_distance(new_by, self.right_paddle.y, self.right_paddle.h)
-        return -yd1/(parameters.WINDOW_HEIGHT-self.right_paddle.h)
+        new_yd = get_y_distance(new_by, new_ry, self.right_paddle.h)
+        old_yd = get_y_distance(prev_by, prev_ry, self.right_paddle.h)
+        if old_yd == new_yd and new_yd > 0:
+            return -0.1
+        else:
+            return 0.1 * np.sign(old_yd-new_yd)
+
+        # return 0.1 if yd1 == 0 else -yd1/(parameters.WINDOW_HEIGHT-self.right_paddle.h)
         # xd = abs(new_bx - self.right_paddle.x + self.ball.r)
         # return int(xd < 10) if yd1 == 0 else -yd1/parameters.WINDOW_HEIGHT
         # return int(xd < 10) if yd1 == 0 else -np.log(yd1)
