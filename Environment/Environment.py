@@ -71,8 +71,6 @@ class PongEnvironment:
         else:
             pygame.quit()
         self.done = False
-        self.action_space = 3
-        self.observation_space = len(self.observe())
 
     def render(self):
         if self.drawable:
@@ -126,38 +124,17 @@ class PongEnvironment:
         return np.array([self.right_paddle.y, self.left_paddle.y, self.ball.x, self.ball.y])
 
     def get_reward(self, action, prev_state, next_state, res):
-        # return -res
+        largest_distance = parameters.WINDOW_HEIGHT - parameters.PADDLE_2_HEIGHT - parameters.R_BALL
+        # return -res*100
         prev_ry, prev_ly, prev_bx, prev_by = prev_state
         new_ry, new_ly, new_bx, new_by = next_state
         if res != 0:
-            return -res*10
+            return -res*parameters.WINDOW_WIDTH
         if new_bx <= prev_bx:  # ball moving is not moving towards the RL agent (right paddle)
             return 0
-        new_yd = get_y_distance(new_by, new_ry, self.right_paddle.h)
-        old_yd = get_y_distance(prev_by, prev_ry, self.right_paddle.h)
-        if old_yd == new_yd and new_yd > 0:
-            return -0.1
+        new_yd = get_y_distance(new_by, new_ry, self.right_paddle.h)/largest_distance
+        #old_yd = get_y_distance(prev_by, prev_ry, self.right_paddle.h)/largest_distance
+        if new_yd == 0:
+            return 1
         else:
-            return 0.1 * np.sign(old_yd-new_yd)
-
-        # return 0.1 if yd1 == 0 else -yd1/(parameters.WINDOW_HEIGHT-self.right_paddle.h)
-        # xd = abs(new_bx - self.right_paddle.x + self.ball.r)
-        # return int(xd < 10) if yd1 == 0 else -yd1/parameters.WINDOW_HEIGHT
-        # return int(xd < 10) if yd1 == 0 else -np.log(yd1)
-        # # yd2 = get_y_distance(new_by, self.left_paddle.y, self.left_paddle.h)
-        # if new_bx > prev_bx: # ball moving towards the right paddle
-        #     xd = new_bx - self.right_paddle.x+self.ball.r
-        # else:
-        #     xd = new_bx - self.left_paddle.x - self.left_paddle.w -self.ball.r
-        # # m = -np.mean([yd1, yd2])
-        # if xd < 1 and m == 0:
-        #     return 1
-        # else:
-        #     return m
-        # if xd < 1:  # augment reward at the end of the episode
-        #     # yd *= 10
-        #     return res
-        # else:
-        #     return 0
-        # return -yd * res
-
+            return -new_yd

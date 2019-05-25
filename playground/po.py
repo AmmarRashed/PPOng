@@ -158,8 +158,8 @@ class Agent:
 
     def get_batch(self):
         """
-        Sometimes this run_trajectory exceeds buffer size and thats normal. For example,
-        buffer size is 250 but we don't observe any done's until 250. This run_trajectory
+        Sometimes this rollout exceeds buffer size and thats normal. For example,
+        buffer size is 250 but we don't observe any done's until 250. This rollout
         continues until we see a done(either a goal reach or time exceed done)
         This can be altered by counting a variable and checking that variable with
         buffer size.
@@ -200,7 +200,7 @@ class Agent:
         return obs, action, pred, reward, untransformed_reward
 
     def run(self):
-        # Note that in PPO, episodes are not counted, instead, we do a run_trajectory of K steps and learn from that
+        # Note that in PPO, episodes are not counted, instead, we do a rollout of K steps and learn from that
         while self.episode < EPISODES:
             """
             In the original code, these arrays are clipped to BUFFER_SIZE number of elements

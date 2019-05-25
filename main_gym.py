@@ -1,4 +1,5 @@
 import os
+import gym
 from tqdm import tqdm
 from PPO import *
 import matplotlib.pyplot as plt
@@ -28,11 +29,10 @@ def update_plot(x, y):
 
 
 EPOCHS = 2_000  # maximum number of updates
-ENVIRONMENT = "Pong"
+ENVIRONMENT = "CartPole-v0"
 if __name__ == "__main__":
-    env = PongEnvironment(False)
-    num_states = len(env.observe())
-    ppo = PPO(env, num_states=num_states, actions=np.arange(3))
+    env = gym.make(ENVIRONMENT)
+    ppo = PPO(env, num_states=env.observation_space.shape[0], actions=np.arange(env.action_space.n))
     rewards = list()
     eps = 0
     for e in tqdm(range(EPOCHS)):
@@ -48,6 +48,6 @@ if __name__ == "__main__":
         update_plot(range(len(rewards)), rewards)
         if e+1 % 200 == 0:
             print("Saved model checkpoint")
-            ppo.saver.save(ppo.sess, f"./model/{ENVIRONMENT}_model.ckpt")
-    plt.savefig("ppo.png")
-    pickle.dump(rewards, open('pong_rewards.pkl', 'wb'))
+            ppo.saver.save(ppo.sess, f"./model/{ENVIRONMENT.split('-')[0]}_model.ckpt")
+    plt.savefig("gym.png")
+    pickle.dump(rewards, open('gym_rewards.pkl', 'wb'))
