@@ -125,7 +125,7 @@ class PongEnvironment:
 
     def get_reward(self, action, prev_state, next_state, res):
         largest_distance = parameters.WINDOW_HEIGHT - parameters.PADDLE_2_HEIGHT - parameters.R_BALL
-        return -res
+        # eturn -res
         # return -res
         prev_ry, prev_ly, prev_bx, prev_by = prev_state
         new_ry, new_ly, new_bx, new_by = next_state
