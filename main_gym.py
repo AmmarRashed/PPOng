@@ -36,10 +36,10 @@ if __name__ == "__main__":
     rewards = list()
     eps = 0
     for e in tqdm(range(EPOCHS)):
-        episodes_count, mean_trajectories_reward, mean_ep_len = ppo.update()
+        episodes_count, total_trajectories_reward, mean_ep_len = ppo.update()
         eps += episodes_count
-        rewards.append(mean_trajectories_reward)
-        print(f"Epoch: {e+1}\tRolled episodes: {episodes_count}\tMean ep len: {mean_ep_len}\tMean Reward: {mean_trajectories_reward}\n"
+        rewards.append(total_trajectories_reward)
+        print(f"Epoch: {e+1}\tRolled episodes: {episodes_count}\tMean ep len: {mean_ep_len}\tMean Reward: {total_trajectories_reward}\n"
               f"Total episodes: {eps}")
         print()
         #if e % 10 == 0:

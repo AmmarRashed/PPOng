@@ -125,16 +125,17 @@ class PongEnvironment:
 
     def get_reward(self, action, prev_state, next_state, res):
         largest_distance = parameters.WINDOW_HEIGHT - parameters.PADDLE_2_HEIGHT - parameters.R_BALL
-        # return -res*100
+        return -res
+        # return -res
         prev_ry, prev_ly, prev_bx, prev_by = prev_state
         new_ry, new_ly, new_bx, new_by = next_state
         if res != 0:
-            return -res*parameters.WINDOW_WIDTH
+            return res*parameters.WINDOW_WIDTH*0.1
         if new_bx <= prev_bx:  # ball moving is not moving towards the RL agent (right paddle)
             return 0
         new_yd = get_y_distance(new_by, new_ry, self.right_paddle.h)/largest_distance
         #old_yd = get_y_distance(prev_by, prev_ry, self.right_paddle.h)/largest_distance
         if new_yd == 0:
-            return 1
+            return 0.1
         else:
-            return -new_yd
+            return -new_yd/10
